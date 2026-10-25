@@ -1,0 +1,44 @@
+[
+  {
+    "name": "ripgrep",
+    "note": "Rust workspace, cargo test (unit + integration), edit in the searcher crate",
+    "repo": "bench/repos/ripgrep",
+    "url": "https://github.com/BurntSushi/ripgrep.git",
+    "commit": "6892bc2b7efe5909cbbeec8f757ed2c4c76b1d30",
+    "cmd": "cargo test",
+    "edit": "crates/searcher/src/lib.rs",
+    "edit_line": "#[doc(hidden)] pub fn offload_bench_{N}() -> u64 { {N} }"
+  },
+  {
+    "name": "prometheus-promql",
+    "note": "Go, targeted go test -count=1 of model/... and promql/parser after an edit in model/labels (a package most of Prometheus depends on)",
+    "repo": "bench/repos/prometheus",
+    "url": "https://github.com/prometheus/prometheus.git",
+    "commit": "a2fda0ef4638518a6a6fb27fc48be88fbd732f4b",
+    "cmd": "go test -count=1 ./promql/parser/... ./model/...",
+    "edit": "model/labels/labels_common.go",
+    "edit_line": "func OffloadBench{N}() int { return {N} % 7 }"
+  },
+  {
+    "name": "vue-core",
+    "note": "TypeScript monorepo, vitest unit projects, edit in runtime-core",
+    "repo": "bench/repos/vue",
+    "url": "https://github.com/vuejs/core.git",
+    "commit": "0ff253bfba3ee8d3d65448bd44ad890fd01b0ecd",
+    "setup": "npx -y pnpm@12.11.2 install --frozen-lockfile --prefer-offline",
+    "cmd": "./node_modules/.bin/vitest run --project 'unit*'",
+    "edit": "packages/runtime-core/src/renderer.ts",
+    "edit_line": "export const __offloadBench{N} = {N}"
+  },
+  {
+    "name": "express",
+    "note": "Small JS suite (mocha, ~3s): the case where offload is expected to lose",
+    "repo": "bench/repos/express",
+    "url": "https://github.com/expressjs/express.git",
+    "commit": "0dee2c52c7c873498f8ed7d8ee4ddd0a04d3ada8",
+    "setup": "npm install --no-audit --no-fund --prefer-offline",
+    "cmd": "./node_modules/.bin/mocha --require test/support/env --reporter spec --check-leaks test/ test/acceptance/",
+    "edit": "lib/utils.js",
+    "edit_line": "exports.__offloadBench{N} = {N};"
+  }
+]

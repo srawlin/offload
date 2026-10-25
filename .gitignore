@@ -1,0 +1,6 @@
+bin/
+.env
+.env.*
+.DS_Store
+docs-internal/
+bench/repos/

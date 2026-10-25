@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"offload/internal/client"
-	"offload/internal/hook"
-	"offload/internal/node"
+	"github.com/srawlin/offload/internal/client"
+	"github.com/srawlin/offload/internal/hook"
+	"github.com/srawlin/offload/internal/node"
 )
 
 func main() {

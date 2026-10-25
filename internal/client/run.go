@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"offload/internal/proto"
-	"offload/internal/report"
+	"github.com/srawlin/offload/internal/proto"
+	"github.com/srawlin/offload/internal/report"
 )
 
 // Config says where the node is. Env vars override ~/.offload/config.json.

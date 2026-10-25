@@ -12,10 +12,11 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
       - run: go test ./...
@@ -23,10 +24,11 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+          cache: false
       - name: build the node image (Go toolchain only, to keep CI fast)
         run: docker build -t offload-node --build-arg NODE_VERSION= --build-arg RUST_VERSION= .
       - name: end-to-end run through the node

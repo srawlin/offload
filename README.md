@@ -42,10 +42,11 @@ headroom. Timing-sensitive tests that flaked on the overloaded laptop mostly pas
 
 ## Quick start
 
-**1. Install the CLI** (macOS or Linux): download a binary from Releases, or build from source:
+**1. Install the CLI** (macOS or Linux): download a binary from
+[Releases](https://github.com/srawlin/offload/releases), or with Go 1.23+:
 
 ```sh
-go build -o /usr/local/bin/offload ./cmd/offload    # Go 1.23+
+go install github.com/srawlin/offload/cmd/offload@latest
 ```
 
 **2. Start a node.** On any Linux machine with your toolchains, or in Docker:

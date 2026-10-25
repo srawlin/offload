@@ -34,7 +34,7 @@ import (
 	"syscall"
 	"time"
 
-	"offload/internal/proto"
+	"github.com/srawlin/offload/internal/proto"
 )
 
 type Server struct {

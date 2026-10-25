@@ -14,6 +14,8 @@ func TestParsers(t *testing.T) {
 		{"vitest", " FAIL  src/a.test.ts > math > adds\nAssertionError: expected 3 to be 4\n\n Test Files  1 failed | 3 passed (4)\n      Tests  1 failed | 41 passed (42)\n", "vitest", 41, 1, "src/a.test.ts > math > adds"},
 		{"jest", "  ● math › adds\n\n    expect(received).toBe(expected)\n\nTests:       1 failed, 9 passed, 10 total\n", "jest", 9, 1, "math › adds"},
 		{"pytest", "FAILED tests/test_a.py::test_x - AssertionError: boom\n===== 1 failed, 5 passed in 0.12s =====\n", "pytest", 5, 1, "tests/test_a.py::test_x"},
+		{"node-spec", "✔ ok (0.4ms)\n✖ adds (1.1ms)\n  AssertionError: 1 == 2\nℹ tests 2\nℹ pass 1\nℹ fail 1\nℹ skipped 0\n\n✖ failing tests:\n\n✖ adds (1.1ms)\n", "node", 1, 1, "adds"},
+		{"node-tap", "TAP version 13\nok 1 - fine\nnot ok 2 - breaks\n# tests 2\n# pass 1\n# fail 1\n", "node", 1, 1, "breaks"},
 		{"mocha", "  12 passing (40ms)\n  1 failing\n\n  1) app\n       GET /:\n     Error: expected 200\n", "mocha", 12, 1, "app"},
 	}
 	for _, c := range cases {

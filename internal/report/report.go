@@ -2,7 +2,7 @@
 //
 // Parsers work on the tools' default human output so the agent still sees the
 // native format. Each one recognises go test, cargo test, vitest, jest,
-// mocha or pytest output; anything else gets the generic fallback.
+// mocha, pytest or node --test output; anything else gets the generic fallback.
 package report
 
 import (
@@ -59,7 +59,7 @@ var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 func Parse(out string) Summary {
 	out = ansi.ReplaceAllString(out, "")
 	lines := strings.Split(out, "\n")
-	for _, p := range []func([]string) (Summary, bool){parseCargo, parseGo, parseVitest, parseJest, parsePytest, parseMocha} {
+	for _, p := range []func([]string) (Summary, bool){parseNodeTest, parseCargo, parseGo, parseVitest, parseJest, parsePytest, parseMocha} {
 		if s, ok := p(lines); ok {
 			return s
 		}
@@ -321,4 +321,38 @@ func (s *Summary) Trim(budgetTokens int) {
 	if len(s.Errors) > 20 {
 		s.Errors = append(s.Errors[:20], fmt.Sprintf("… %d more", len(s.Errors)-20))
 	}
+}
+
+var (
+	nodeCount = regexp.MustCompile(`^[ℹ#] (pass|fail|skipped|todo) (\d+)$`)
+	nodeFail  = regexp.MustCompile(`^\s*(?:✖ (.+?) \([\d.]+m?s\)|not ok \d+ - (.+))$`)
+)
+
+// parseNodeTest reads node --test output (spec or TAP reporter).
+func parseNodeTest(lines []string) (Summary, bool) {
+	s := Summary{Framework: "node"}
+	seen := false
+	failed := map[string]bool{}
+	for i, l := range lines {
+		l = strings.TrimRight(l, " \r")
+		if m := nodeCount.FindStringSubmatch(l); m != nil {
+			seen = true
+			switch m[1] {
+			case "pass":
+				s.Passed = atoi(m[2])
+			case "fail":
+				s.Failed = atoi(m[2])
+			default:
+				s.Skipped += atoi(m[2])
+			}
+		} else if m := nodeFail.FindStringSubmatch(l); m != nil {
+			name := m[1] + m[2]
+			// The spec reporter repeats failures in a "failing tests" recap.
+			if !failed[name] {
+				failed[name] = true
+				s.Failures = append(s.Failures, Failure{Test: name, Excerpt: excerpt(lines, i, 8, nil)})
+			}
+		}
+	}
+	return s, seen
 }

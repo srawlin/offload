@@ -1,0 +1,41 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go build ./...
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build the node image (Go toolchain only, to keep CI fast)
+        run: docker build -t offload-node --build-arg NODE_VERSION= --build-arg RUST_VERSION= .
+      - name: end-to-end run through the node
+        run: |
+          go build -o bin/offload ./cmd/offload
+          docker run -d --name node -p 127.0.0.1:7070:7070 -e OFFLOAD_NODE_TOKEN=ci-token offload-node \
+            offload node --listen :7070 --root /data/offload --plain-http
+          for i in $(seq 50); do curl -fs http://127.0.0.1:7070/v1/health && break; sleep 0.2; done
+          echo "SECRET=1" > .env
+          export OFFLOAD_NODE=http://127.0.0.1:7070 OFFLOAD_TOKEN=ci-token OFFLOAD_MODE=remote
+          bin/offload run -- go test ./internal/...
+          bin/offload run -- test ! -e .env

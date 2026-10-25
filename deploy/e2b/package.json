@@ -1,0 +1,18 @@
+{
+  "name": "offload-e2b",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsx build.ts",
+    "connect": "tsx connect.ts",
+    "check": "tsc"
+  },
+  "dependencies": {
+    "e2b": "^2.59.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "@types/node": "^24.0.0"
+  }
+}

@@ -15,11 +15,21 @@ import (
 
 // Repo is the local worktree an agent is working in.
 type Repo struct {
-	Root      string // worktree top level
-	GitDir    string // per-worktree git dir
-	CommonDir string // shared git dir (same as GitDir unless using git worktrees)
-	ID        string // stable repo id shared by all worktrees and clones
-	Worktree  string // id of this worktree (one per agent)
+	Root      string   // worktree top level
+	GitDir    string   // per-worktree git dir
+	CommonDir string   // shared git dir (same as GitDir unless using git worktrees)
+	ID        string   // stable repo id shared by all worktrees and clones
+	Worktree  string   // id of this worktree (one per agent)
+	Exclude   []string // untracked files matching these globs are never synced
+}
+
+// DefaultExclude lists secret-looking files that are synced only if git
+// tracks them. Patterns are git glob pathspecs relative to the worktree root.
+var DefaultExclude = []string{
+	"**/.env", "**/.env.*", "**/.envrc", "**/.netrc", "**/.npmrc", "**/.pypirc",
+	"**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/id_rsa*", "**/id_ed25519*",
+	"**/.aws/**", "**/.ssh/**", "**/.docker/config.json", "**/credentials.json",
+	"**/*.tfstate", "**/*.tfstate.*", "**/.terraform/**",
 }
 
 func OpenRepo(dir string) (*Repo, error) {
@@ -31,7 +41,7 @@ func OpenRepo(dir string) (*Repo, error) {
 	if len(f) != 3 {
 		return nil, fmt.Errorf("unexpected rev-parse output: %q", out)
 	}
-	r := &Repo{Root: f[0], GitDir: f[1], CommonDir: f[2]}
+	r := &Repo{Root: f[0], GitDir: f[1], CommonDir: f[2], Exclude: DefaultExclude}
 	host, _ := os.Hostname()
 	r.Worktree = shortHash(host + ":" + r.Root)
 	r.ID, err = r.repoID()
@@ -98,6 +108,9 @@ func (r *Repo) TakeSnapshot(node string) (*Snapshot, error) {
 	if out, err := gitOut(r.Root, env, "add", "-A", "--ignore-errors", "."); err != nil {
 		return nil, fmt.Errorf("snapshot: git add: %s", out)
 	}
+	if err := r.dropSecrets(env); err != nil {
+		return nil, err
+	}
 	tree, err := gitOut(r.Root, env, "write-tree")
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: write-tree: %s", tree)
@@ -127,6 +140,47 @@ func (r *Repo) TakeSnapshot(node string) (*Snapshot, error) {
 	}
 	s.Commit = strings.TrimSpace(c)
 	return s, nil
+}
+
+// dropSecrets removes secret-looking files from the snapshot index unless git
+// tracks them: an untracked .env or key never leaves the machine, while
+// committed test fixtures (testdata/server.key) still sync.
+func (r *Repo) dropSecrets(env []string) error {
+	if len(r.Exclude) == 0 {
+		return nil
+	}
+	spec := []string{"--"}
+	for _, p := range r.Exclude {
+		spec = append(spec, ":(glob)"+p)
+	}
+	snap, err := gitOut(r.Root, env, append([]string{"ls-files", "-z"}, spec...)...)
+	if err != nil {
+		return fmt.Errorf("snapshot: ls-files: %s", snap)
+	}
+	if snap == "" {
+		return nil
+	}
+	tracked, err := gitOut(r.Root, nil, append([]string{"ls-files", "-z"}, spec...)...)
+	if err != nil {
+		return fmt.Errorf("snapshot: ls-files: %s", tracked)
+	}
+	keep := map[string]bool{}
+	for _, f := range strings.Split(tracked, "\x00") {
+		keep[f] = true
+	}
+	drop := []string{"rm", "-q", "--cached", "--"}
+	for _, f := range strings.Split(snap, "\x00") {
+		if f != "" && !keep[f] {
+			drop = append(drop, ":(literal)"+f)
+		}
+	}
+	if len(drop) == 4 {
+		return nil
+	}
+	if out, err := gitOut(r.Root, env, drop...); err != nil {
+		return fmt.Errorf("snapshot: exclude secrets: %s", out)
+	}
+	return nil
 }
 
 // Full returns a parentless snapshot of the same tree, for when the node has

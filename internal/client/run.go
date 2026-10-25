@@ -31,6 +31,19 @@ type Config struct {
 	Token       string `json:"token"`
 	Fingerprint string `json:"fingerprint"` // SHA-256 of the node's TLS cert
 	Mode        string `json:"mode"`        // auto (default) | remote | local
+	// Headers are added to every request, e.g. a sandbox provider's access
+	// token ({"e2b-traffic-access-token": "…"}).
+	Headers map[string]string `json:"headers,omitempty"`
+	// SyncExclude replaces client.DefaultExclude when set ([] syncs everything).
+	SyncExclude []string `json:"sync_exclude,omitempty"`
+}
+
+func (c Config) openRepo(dir string) (*Repo, error) {
+	r, err := OpenRepo(dir)
+	if err == nil && c.SyncExclude != nil {
+		r.Exclude = c.SyncExclude
+	}
+	return r, err
 }
 
 func ConfigPath() string {
@@ -57,8 +70,36 @@ func LoadConfig() Config {
 
 func (c Config) nodeKey() string { return shortHash(c.Node) }
 
+// httpClient pins the node's self-signed certificate when a fingerprint is
+// configured, and otherwise verifies TLS normally (a node behind a proxy
+// with a real certificate, or plain http:// through a tunnel).
 func (c Config) httpClient() *http.Client {
-	tlsCfg := &tls.Config{
+	var tlsCfg *tls.Config
+	if c.Fingerprint != "" {
+		tlsCfg = c.pinnedTLS()
+	}
+	return &http.Client{Transport: &headerTransport{h: c.Headers, rt: &http.Transport{
+		Proxy:             http.ProxyFromEnvironment,
+		TLSClientConfig:   tlsCfg,
+		ForceAttemptHTTP2: true,
+		DialContext:       (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+	}}}
+}
+
+type headerTransport struct {
+	h  map[string]string
+	rt http.RoundTripper
+}
+
+func (t *headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	for k, v := range t.h {
+		r.Header.Set(k, v)
+	}
+	return t.rt.RoundTrip(r)
+}
+
+func (c Config) pinnedTLS() *tls.Config {
+	return &tls.Config{
 		InsecureSkipVerify: true, // replaced by fingerprint pinning below
 		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
 			if len(raw) == 0 {
@@ -71,11 +112,6 @@ func (c Config) httpClient() *http.Client {
 			return nil
 		},
 	}
-	return &http.Client{Transport: &http.Transport{
-		TLSClientConfig:   tlsCfg,
-		ForceAttemptHTTP2: true,
-		DialContext:       (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
-	}}
 }
 
 type Options struct {
@@ -173,7 +209,7 @@ func runLocal(ctx context.Context, o Options) Result {
 
 func runRemote(ctx context.Context, cfg Config, o Options) (Result, error) {
 	res := Result{Mode: "remote", Phases: map[string]int64{}}
-	repo, err := OpenRepo(o.Dir)
+	repo, err := cfg.openRepo(o.Dir)
 	if err != nil {
 		return res, err
 	}
@@ -289,7 +325,7 @@ func postRun(ctx context.Context, client *http.Client, cfg Config, repo *Repo, s
 // Sync pushes the current worktree snapshot without running anything, so a
 // later run finds nothing to upload (speculative sync).
 func Sync(ctx context.Context, cfg Config, dir string) (bytesSent int, err error) {
-	repo, err := OpenRepo(dir)
+	repo, err := cfg.openRepo(dir)
 	if err != nil {
 		return 0, err
 	}

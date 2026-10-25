@@ -1,13 +1,4 @@
 // Command offload runs an agent's build/test commands on a warm remote node.
-//
-//	offload run [--local] [--json] [--stats FILE] -- <cmd> [args…]
-//	offload test [--local] [--json]           auto-detect the test command
-//	offload sync | watch                      push the worktree ahead of a run
-//	offload pool N                            keep N warm workspaces for this repo
-//	offload doctor                            check the node connection
-//	offload init --node URL --token T --fingerprint F [--claude]
-//	offload node [--listen :7070] [--root DIR]  run a node (Linux)
-//	offload hook claude                       Claude Code PreToolUse hook
 package main
 
 import (
@@ -16,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -53,6 +46,8 @@ func main() {
 		cmdInit(args)
 	case "node":
 		cmdNode(args)
+	case "version", "--version":
+		fmt.Println("offload", version)
 	case "hook":
 		if len(args) > 0 && args[0] == "claude" {
 			bin, _ := os.Executable()
@@ -65,9 +60,37 @@ func main() {
 	}
 }
 
+// version is set at release time with -ldflags "-X main.version=…".
+var version = "dev"
+
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: offload run|test|sync|watch|pool|doctor|init|node|hook  (see source header)`)
+	fmt.Fprint(os.Stderr, `offload runs build/test commands on a warm remote node.
+
+usage:
+  offload run [--local] [--json] [--env K=V]… -- <cmd> [args…]
+  offload test [flags]                 detect and run the repo's test command
+  offload sync | watch                 push the worktree ahead of a run
+  offload pool N                       keep N warm workspaces for this repo
+  offload doctor                       check the node connection
+  offload init --node URL --token T [--fingerprint F] [--header K=V]… [--claude]
+  offload node [--listen :7070] [--root DIR] [--plain-http]   run a node (Linux)
+  offload hook claude                  Claude Code PreToolUse hook (installed by init --claude)
+  offload version
+`)
 	os.Exit(2)
+}
+
+// kvFlag collects repeated K=V flags.
+type kvFlag map[string]string
+
+func (f kvFlag) String() string { return "" }
+func (f kvFlag) Set(v string) error {
+	k, val, ok := strings.Cut(v, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("want K=V, got %q", v)
+	}
+	f[k] = val
+	return nil
 }
 
 func fatal(err error) {
@@ -82,6 +105,8 @@ func cmdRun(ctx context.Context, args []string, argv []string) int {
 	budget := fs.Int("budget", 2000, "token budget for the JSON summary")
 	stats := fs.String("stats", "", "append a JSON result line to this file")
 	quiet := fs.Bool("quiet", false, "no footer")
+	env := kvFlag{}
+	fs.Var(env, "env", "set an environment variable for the command (repeatable; the node does not inherit local env)")
 	fs.Parse(args)
 	if argv == nil {
 		argv = fs.Args()
@@ -90,7 +115,7 @@ func cmdRun(ctx context.Context, args []string, argv []string) int {
 		fatal(fmt.Errorf("no command"))
 	}
 	cwd, _ := os.Getwd()
-	o := client.Options{Argv: argv, Dir: cwd, Local: *local}
+	o := client.Options{Argv: argv, Dir: cwd, Local: *local, Env: env}
 	if !*asJSON {
 		o.Out = os.Stdout
 	}
@@ -232,9 +257,18 @@ func cmdInit(args []string) {
 	cfg := client.LoadConfig()
 	fs.StringVar(&cfg.Node, "node", cfg.Node, "node URL (https://host:7070)")
 	fs.StringVar(&cfg.Token, "token", cfg.Token, "node token")
-	fs.StringVar(&cfg.Fingerprint, "fingerprint", cfg.Fingerprint, "node TLS certificate SHA-256")
+	fs.StringVar(&cfg.Fingerprint, "fingerprint", cfg.Fingerprint, "node TLS certificate SHA-256 (omit for a node behind a proxy with a real certificate)")
+	if cfg.Headers == nil {
+		cfg.Headers = map[string]string{}
+	}
+	fs.Var(kvFlag(cfg.Headers), "header", "extra request header, e.g. a sandbox access token (repeatable)")
 	claude := fs.Bool("claude", false, "install the Claude Code hook in this repo (.claude/settings.local.json)")
 	fs.Parse(args)
+	if u, err := url.Parse(cfg.Node); cfg.Node != "" && (err != nil || (u.Scheme != "https" && u.Scheme != "http")) {
+		fatal(fmt.Errorf("--node must be an http(s) URL, got %q", cfg.Node))
+	} else if cfg.Node != "" && u.Scheme == "http" && !isLoopback(u.Hostname()) {
+		fmt.Fprintln(os.Stderr, "offload: warning: plain http to a remote host sends the token and your code unencrypted; use https or an ssh tunnel")
+	}
 	os.MkdirAll(filepath.Dir(client.ConfigPath()), 0o700)
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	if err := os.WriteFile(client.ConfigPath(), b, 0o600); err != nil {
@@ -246,6 +280,14 @@ func cmdInit(args []string) {
 			fatal(err)
 		}
 	}
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // installClaudeHook merges a PreToolUse hook on Bash into the project's
@@ -295,16 +337,23 @@ func cmdNode(args []string) {
 	fs := flag.NewFlagSet("node", flag.ExitOnError)
 	listen := fs.String("listen", ":7070", "listen address")
 	root := fs.String("root", "/data/offload", "state directory")
+	token := fs.String("token", os.Getenv("OFFLOAD_NODE_TOKEN"), "API token (default: $OFFLOAD_NODE_TOKEN, else generated into <root>/token)")
+	plain := fs.Bool("plain-http", false, "serve plain HTTP, for use behind a TLS-terminating proxy or tunnel (E2B sandbox URL, ssh -L)")
 	fs.Parse(args)
-	s, err := node.New(*root)
+	s, err := node.New(*root, *token)
 	if err != nil {
 		log.Fatal(err)
+	}
+	srv := &http.Server{Addr: *listen, Handler: s.Handler()}
+	if *plain {
+		log.Printf("offload node on %s (plain HTTP), root %s, token in %s", *listen, *root, filepath.Join(*root, "token"))
+		log.Fatal(srv.ListenAndServe())
 	}
 	tlsCfg, fp, err := s.TLSConfig()
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("offload node on %s, root %s\nfingerprint %s", *listen, *root, fp)
-	srv := &http.Server{Addr: *listen, Handler: s.Handler(), TLSConfig: tlsCfg}
+	srv.TLSConfig = tlsCfg
+	log.Printf("offload node on %s, root %s, token in %s\nfingerprint %s", *listen, *root, filepath.Join(*root, "token"), fp)
 	log.Fatal(srv.ListenAndServeTLS("", ""))
 }

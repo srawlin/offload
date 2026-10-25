@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -62,9 +63,16 @@ type workspace struct {
 var safeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-func New(root string) (*Server, error) {
+// New opens (or creates) the node state under root. An empty token means the
+// one stored in root/token, generated on first start.
+func New(root, token string) (*Server, error) {
 	for _, d := range []string{"repos", "ws", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			return nil, err
+		}
+	}
+	if token != "" {
+		if err := os.WriteFile(filepath.Join(root, "token"), []byte(token), 0o600); err != nil {
 			return nil, err
 		}
 	}
@@ -119,7 +127,8 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+s.Token {
+		got := []byte(r.Header.Get("Authorization"))
+		if subtle.ConstantTimeCompare(got, []byte("Bearer "+s.Token)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

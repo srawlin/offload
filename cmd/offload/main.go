@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -47,6 +48,9 @@ func main() {
 	case "node":
 		cmdNode(args)
 	case "version", "--version":
+		if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			version = bi.Main.Version // go install …@vX.Y.Z
+		}
 		fmt.Println("offload", version)
 	case "hook":
 		if len(args) > 0 && args[0] == "claude" {

@@ -20,7 +20,7 @@ ARG NODE_VERSION=24.13.0
 ARG RUST_VERSION=1.98.1
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -q && apt-get install -yq --no-install-recommends \
-      git ca-certificates curl xz-utils build-essential pkg-config libssl-dev python3 python3-venv \
+      git ca-certificates curl xz-utils build-essential pkg-config libssl-dev python3 python3-venv tini \
     && rm -rf /var/lib/apt/lists/*
 # The state dir is world-writable so the node can run as any user (E2B and
 # microsandbox pick their own); toolchains are installed system-wide for the same reason.
@@ -42,4 +42,8 @@ USER offload
 COPY --from=build /offload /usr/local/bin/offload
 VOLUME /data/offload
 EXPOSE 7070
+# PID 1 has to reap orphans. Commands the node runs leave orphaned grandchildren behind (`cmd &`, a test
+# that kills a child's parent); with the node itself as PID 1 they stay zombies for good, so tests that
+# check a process is gone see it alive.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["offload", "node", "--listen", ":7070", "--root", "/data/offload"]

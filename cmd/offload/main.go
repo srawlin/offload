@@ -48,10 +48,7 @@ func main() {
 	case "node":
 		cmdNode(args)
 	case "version", "--version":
-		if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-			version = bi.Main.Version // go install …@vX.Y.Z
-		}
-		fmt.Println("offload", version)
+		fmt.Println("offload", currentVersion())
 	case "hook":
 		if len(args) > 0 && args[0] == "claude" {
 			bin, _ := os.Executable()
@@ -66,6 +63,13 @@ func main() {
 
 // version is set at release time with -ldflags "-X main.version=…".
 var version = "dev"
+
+func currentVersion() string {
+	if bi, ok := debug.ReadBuildInfo(); ok && version == "dev" && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version // go install …@vX.Y.Z
+	}
+	return version
+}
 
 func usage() {
 	fmt.Fprint(os.Stderr, `offload runs build/test commands on a warm remote node.
@@ -243,17 +247,36 @@ func cmdDoctor(ctx context.Context) {
 	if cfg.Node == "" {
 		fatal(fmt.Errorf("no node configured"))
 	}
+	var nodeVersion string
 	for i := 0; i < 3; i++ {
-		d, err := client.Ping(ctx, cfg)
+		d, v, err := client.Health(ctx, cfg)
 		if err != nil {
 			fatal(err)
 		}
+		nodeVersion = v
 		fmt.Printf("health round trip (new TLS connection): %dms\n", d.Milliseconds())
+	}
+	if nodeVersion == "" {
+		nodeVersion = "unknown (older than this client)"
+	}
+	fmt.Printf("versions: client %s, node %s\n", currentVersion(), nodeVersion)
+	if w := versionWarning(currentVersion(), nodeVersion); w != "" {
+		fmt.Fprintln(os.Stderr, "offload: warning:", w)
 	}
 	cwd, _ := os.Getwd()
 	if r, err := client.OpenRepo(cwd); err == nil {
 		fmt.Printf("repo: %s (id %s, worktree %s)\n", r.Root, r.ID, r.Worktree)
 	}
+}
+
+// versionWarning flags a client and node built from different code. Unknown or
+// dev builds can't be compared, so they never warn.
+func versionWarning(client, node string) string {
+	known := func(v string) bool { return strings.HasPrefix(v, "v") }
+	if known(client) && known(node) && client != node {
+		return "client and node run different versions; upgrade the older one if runs misbehave"
+	}
+	return ""
 }
 
 func cmdInit(args []string) {
@@ -348,6 +371,7 @@ func cmdNode(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	s.Version = currentVersion()
 	srv := &http.Server{Addr: *listen, Handler: s.Handler()}
 	if *plain {
 		log.Printf("offload node on %s (plain HTTP), root %s, token in %s", *listen, *root, filepath.Join(*root, "token"))

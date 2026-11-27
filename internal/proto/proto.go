@@ -14,6 +14,7 @@ const (
 	HeaderDir       = "X-Offload-Dir"       // cwd relative to the repo root
 	HeaderEnv       = "X-Offload-Env"       // JSON map of extra env vars
 	HeaderWorkspace = "X-Offload-Workspace" // response: workspace path on the node
+	HeaderVersion   = "X-Offload-Version"   // response to /v1/health: the node's offload version
 )
 
 // Event types.

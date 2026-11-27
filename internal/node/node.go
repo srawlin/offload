@@ -38,8 +38,9 @@ import (
 )
 
 type Server struct {
-	Root  string
-	Token string
+	Root    string
+	Token   string
+	Version string // reported by /v1/health, so clients can spot a mismatch
 
 	mu    sync.Mutex
 	repos map[string]*repo
@@ -117,6 +118,9 @@ func (s *Server) repo(id string) *repo {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+		if s.Version != "" {
+			w.Header().Set(proto.HeaderVersion, s.Version)
+		}
 		fmt.Fprintln(w, "ok")
 	})
 	mux.HandleFunc("POST /v1/run", s.auth(s.handleRun))

@@ -115,7 +115,7 @@ not read 3,000 lines of test output.
 | `offload test` | Detect the repo's test command and run it |
 | `offload sync` / `offload watch` | Push the worktree ahead of time, once or continuously |
 | `offload pool N` | Keep N warm workspaces for this repo (one per concurrent agent) |
-| `offload doctor` | Check the connection and show the repo and worktree ids |
+| `offload doctor` | Check the connection, compare the client and node versions, and show the repo and worktree ids |
 | `offload init …` | Write `~/.offload/config.json`; `--claude` installs the Claude Code hook |
 | `offload node …` | Run a node (Linux) |
 

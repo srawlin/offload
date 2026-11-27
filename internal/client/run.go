@@ -394,14 +394,23 @@ func Pool(ctx context.Context, cfg Config, dir string, n int) error {
 
 // Ping measures a round trip to the node (including TLS setup).
 func Ping(ctx context.Context, cfg Config) (time.Duration, error) {
+	d, _, err := Health(ctx, cfg)
+	return d, err
+}
+
+// Health is Ping plus the node's offload version ("" from nodes that predate reporting it).
+func Health(ctx context.Context, cfg Config) (time.Duration, string, error) {
 	t := time.Now()
 	req, _ := http.NewRequestWithContext(ctx, "GET", strings.TrimRight(cfg.Node, "/")+"/v1/health", nil)
 	resp, err := cfg.httpClient().Do(req)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	resp.Body.Close()
-	return time.Since(t), nil
+	if resp.StatusCode != http.StatusOK {
+		return 0, "", fmt.Errorf("node: %s", resp.Status)
+	}
+	return time.Since(t), resp.Header.Get(proto.HeaderVersion), nil
 }
 
 func mustAbs(p string) string {

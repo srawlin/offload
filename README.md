@@ -93,7 +93,8 @@ Codex, OpenCode and Cursor are on the roadmap.
    node has lost the base, it answers 409 and the client resends the full tree (never your history).
 3. **Warm workspace.** The node keeps workspaces per repo, with dependencies and build outputs
    intact. Each agent's worktree sticks to its own workspace. New workspaces are reflink clones of
-   the warmest one, so they start warm too.
+   the warmest idle one, so they start warm too. If every workspace is busy, a new one starts
+   empty: later runs prefer a warm workspace over it, and `offload pool` re-seeds it from one.
 4. **Checkout.** `git checkout` rewrites only the files that changed, so unchanged files keep their
    mtimes and incremental builds (cargo, go, tsc) stay incremental. Ignored files such as
    `target/` and `node_modules/` are kept.
@@ -114,7 +115,7 @@ not read 3,000 lines of test output.
 | `offload run [--local] [--json] [--env K=V] -- <cmd>` | Run a command on the node (or locally with `--local`) |
 | `offload test` | Detect the repo's test command and run it |
 | `offload sync` / `offload watch` | Push the worktree ahead of time, once or continuously |
-| `offload pool N` | Keep N warm workspaces for this repo (one per concurrent agent) |
+| `offload pool N` | Keep N warm workspaces for this repo (one per concurrent agent), re-seeding any that started empty |
 | `offload doctor` | Check the connection and show the repo and worktree ids |
 | `offload init …` | Write `~/.offload/config.json`; `--claude` installs the Claude Code hook |
 | `offload node …` | Run a node (Linux) |

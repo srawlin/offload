@@ -77,7 +77,7 @@ usage:
   offload pool N                       keep N warm workspaces for this repo
   offload doctor                       check the node connection
   offload init --node URL --token T [--fingerprint F] [--header K=V]… [--claude]
-  offload node [--listen :7070] [--root DIR] [--plain-http]   run a node (Linux)
+  offload node [--listen :7070] [--root DIR] [--plain-http] [--no-setup]   run a node (Linux)
   offload hook claude                  Claude Code PreToolUse hook (installed by init --claude)
   offload version
 `)
@@ -343,11 +343,13 @@ func cmdNode(args []string) {
 	root := fs.String("root", "/data/offload", "state directory")
 	token := fs.String("token", os.Getenv("OFFLOAD_NODE_TOKEN"), "API token (default: $OFFLOAD_NODE_TOKEN, else generated into <root>/token)")
 	plain := fs.Bool("plain-http", false, "serve plain HTTP, for use behind a TLS-terminating proxy or tunnel (E2B sandbox URL, ssh -L)")
+	noSetup := fs.Bool("no-setup", false, "don't install dependencies (npm ci, uv sync, …) when a lockfile changes")
 	fs.Parse(args)
 	s, err := node.New(*root, *token)
 	if err != nil {
 		log.Fatal(err)
 	}
+	s.NoSetup = *noSetup
 	srv := &http.Server{Addr: *listen, Handler: s.Handler()}
 	if *plain {
 		log.Printf("offload node on %s (plain HTTP), root %s, token in %s", *listen, *root, filepath.Join(*root, "token"))

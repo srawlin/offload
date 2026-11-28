@@ -97,6 +97,11 @@ Codex, OpenCode and Cursor are on the roadmap.
 4. **Checkout.** `git checkout` rewrites only the files that changed, so unchanged files keep their
    mtimes and incremental builds (cargo, go, tsc) stay incremental. Ignored files such as
    `target/` and `node_modules/` are kept.
+   When a lockfile in the command's directory or above it has changed since the workspace's last
+   install, the node first runs `npm ci`, `pnpm install --frozen-lockfile`,
+   `yarn install --frozen-lockfile` or `uv sync --frozen`. Its output is shown only if it fails,
+   and a failed install counts as a node error, so `auto` mode runs the command locally.
+   `offload node --no-setup` turns this off.
 5. **Exec and stream.** Output streams back live, and the exit code and Ctrl-C work as they do
    locally. Remote paths are rewritten to local ones, so `file:line` links still open in your
    editor. Each workspace gets a private `TMPDIR`.

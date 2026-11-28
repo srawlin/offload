@@ -38,8 +38,9 @@ import (
 )
 
 type Server struct {
-	Root  string
-	Token string
+	Root    string
+	Token   string
+	NoSetup bool // don't install dependencies before a run (see setup)
 
 	mu    sync.Mutex
 	repos map[string]*repo
@@ -398,14 +399,30 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	st.send(proto.Event{T: proto.EvPhase, Name: "checkout", Ms: time.Since(tc).Milliseconds()})
 
+	runDir := filepath.Join(ws.path, dir)
+	send := func(d string) { st.send(proto.Event{T: proto.EvOut, D: d}) }
+	if !s.NoSetup {
+		tsu := time.Now()
+		ran, err := s.setup(r.Context(), ws.path, runDir, env, send)
+		if err != nil {
+			log.Printf("run repo=%s ws=%s %v", rp.id, filepath.Base(ws.path), err)
+			st.send(proto.Event{T: proto.EvError, D: err.Error()})
+			return
+		}
+		if ran {
+			st.send(proto.Event{T: proto.EvPhase, Name: "setup", Ms: time.Since(tsu).Milliseconds()})
+		}
+	}
+
 	tr := time.Now()
-	code := s.exec(r.Context(), ws.path, filepath.Join(ws.path, dir), argv, env, st)
+	code := s.exec(r.Context(), ws.path, runDir, argv, env, send)
 	st.send(proto.Event{T: proto.EvPhase, Name: "exec", Ms: time.Since(tr).Milliseconds()})
 	st.send(proto.Event{T: proto.EvExit, Code: code})
 	log.Printf("run repo=%s ws=%s cmd=%q exit=%d total=%s", rp.id, filepath.Base(ws.path), argv, code, time.Since(t0).Round(time.Millisecond))
 }
 
-func (s *Server) exec(ctx context.Context, wsPath, dir string, argv []string, env map[string]string, st *streamer) int {
+// exec runs argv in dir and passes its combined output to out as it arrives.
+func (s *Server) exec(ctx context.Context, wsPath, dir string, argv []string, env map[string]string, out func(string)) int {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if len(argv) == 1 && strings.ContainsAny(argv[0], " |&;<>$`'\"") {
 		cmd = exec.Command("bash", "-c", argv[0])
@@ -425,7 +442,7 @@ func (s *Server) exec(ctx context.Context, wsPath, dir string, argv []string, en
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	if err := cmd.Start(); err != nil {
-		st.send(proto.Event{T: proto.EvOut, D: err.Error() + "\n"})
+		out(err.Error() + "\n")
 		return 127
 	}
 	done := make(chan struct{})
@@ -444,7 +461,7 @@ func (s *Server) exec(ctx context.Context, wsPath, dir string, argv []string, en
 		for {
 			n, err := br.Read(buf)
 			if n > 0 {
-				st.send(proto.Event{T: proto.EvOut, D: string(buf[:n])})
+				out(string(buf[:n]))
 			}
 			if err != nil {
 				return

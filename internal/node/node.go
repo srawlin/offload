@@ -58,7 +58,14 @@ type workspace struct {
 	worktree string // last local worktree that used it (affinity)
 	lastUsed time.Time
 	head     string // snapshot currently checked out
+	// cold marks a workspace created empty because every warm one was busy:
+	// it has no dependencies or build outputs. Runs prefer warm workspaces,
+	// and pool re-seeds cold ones from a warm one.
+	cold bool
 }
+
+// coldMarker records a cold workspace on disk, so it stays cold across restarts.
+const coldMarker = ".git/offload-cold"
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -98,7 +105,8 @@ func (s *Server) rescan() {
 		for _, w := range wss {
 			p := filepath.Join(s.Root, "ws", e.Name(), w.Name())
 			head, _ := git(p, "rev-parse", "HEAD")
-			r.ws = append(r.ws, &workspace{path: p, head: strings.TrimSpace(head)})
+			_, err := os.Stat(filepath.Join(p, coldMarker))
+			r.ws = append(r.ws, &workspace{path: p, head: strings.TrimSpace(head), cold: err == nil})
 		}
 	}
 }
@@ -197,7 +205,8 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handlePool pre-creates workspaces so N concurrent agents all start warm.
+// handlePool pre-creates workspaces so N concurrent agents all start warm,
+// and re-seeds the ones that started empty.
 func (s *Server) handlePool(w http.ResponseWriter, r *http.Request) {
 	rp, ok := s.repoFor(w, r)
 	if !ok {
@@ -206,6 +215,12 @@ func (s *Server) handlePool(w http.ResponseWriter, r *http.Request) {
 	min, _ := strconv.Atoi(r.URL.Query().Get("min"))
 	if min > 32 {
 		min = 32
+	}
+	if n, err := s.reseed(rp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	} else if n > 0 {
+		log.Printf("pool repo=%s reseeded=%d", rp.id, n)
 	}
 	for {
 		s.mu.Lock()
@@ -233,24 +248,18 @@ func (s *Server) repoFor(w http.ResponseWriter, r *http.Request) (*repo, bool) {
 	return s.repo(id), true
 }
 
-// acquire picks a workspace: the one this worktree used last, else the most
-// recently used idle one, else a new clone of the warmest idle workspace.
+// acquire picks an idle workspace, warm ones before cold ones: the one this
+// worktree used last, else the most recently used. With none idle it makes a
+// new one.
 func (s *Server) acquire(rp *repo, worktree string) (*workspace, error) {
 	s.mu.Lock()
-	var pick *workspace
-	for _, w := range rp.ws {
-		if !w.busy && w.worktree == worktree {
-			pick = w
-			break
+	pick := bestIdle(rp, func(w *workspace) int {
+		n := 2 * warmth(w)
+		if w.worktree == worktree {
+			n++
 		}
-	}
-	if pick == nil {
-		for _, w := range rp.ws {
-			if !w.busy && (pick == nil || w.lastUsed.After(pick.lastUsed)) {
-				pick = w
-			}
-		}
-	}
+		return n
+	})
 	if pick != nil {
 		pick.busy, pick.worktree = true, worktree
 		s.mu.Unlock()
@@ -265,33 +274,27 @@ func (s *Server) acquire(rp *repo, worktree string) (*workspace, error) {
 }
 
 // newWorkspace clones the warmest idle workspace (reflink copy on XFS keeps
-// build outputs, so the clone is warm) or creates an empty one. The result is
-// returned busy.
+// build outputs, so the clone is warm) or creates an empty one, which is cold
+// unless it's the repo's first. The result is returned busy.
 func (s *Server) newWorkspace(rp *repo) (*workspace, error) {
 	s.mu.Lock()
-	var src *workspace
-	for _, w := range rp.ws {
-		if !w.busy && (src == nil || w.lastUsed.After(src.lastUsed)) {
-			src = w
-		}
-	}
+	src := bestIdle(rp, warmth)
 	if src != nil {
 		src.busy = true // hold it still while copying
 	}
 	dir := filepath.Join(s.Root, "ws", rp.id)
 	os.MkdirAll(dir, 0o755)
 	path := filepath.Join(dir, strconv.Itoa(len(rp.ws)))
-	ws := &workspace{path: path, busy: true}
+	ws := &workspace{path: path, busy: true, cold: len(rp.ws) > 0}
+	if src != nil {
+		ws.cold = src.cold // cp -a copies the marker too
+	}
 	rp.ws = append(rp.ws, ws)
 	s.mu.Unlock()
 
 	var err error
 	if src != nil {
-		var out []byte
-		out, err = exec.Command("cp", "-a", "--reflink=auto", src.path, path).CombinedOutput()
-		if err != nil {
-			err = fmt.Errorf("clone workspace: %v: %s", err, out)
-		}
+		err = cloneDir(src.path, path)
 		ws.head = src.head
 		s.release(src)
 	} else {
@@ -299,6 +302,9 @@ func (s *Server) newWorkspace(rp *repo) (*workspace, error) {
 		if err == nil {
 			err = os.WriteFile(filepath.Join(path, ".git", "objects", "info", "alternates"),
 				[]byte(filepath.Join(rp.store, "objects")+"\n"), 0o644)
+		}
+		if err == nil && ws.cold {
+			err = os.WriteFile(filepath.Join(path, coldMarker), nil, 0o644)
 		}
 		git(path, "config", "gc.auto", "0")
 	}
@@ -313,6 +319,91 @@ func (s *Server) newWorkspace(rp *repo) (*workspace, error) {
 		os.RemoveAll(path)
 	}
 	return ws, err
+}
+
+// reseed replaces each idle cold workspace with a copy of the warmest idle
+// warm one, and returns how many it replaced.
+func (s *Server) reseed(rp *repo) (int, error) {
+	for n := 0; ; n++ {
+		s.mu.Lock()
+		src := bestIdle(rp, warmth)
+		var dst *workspace
+		for _, w := range rp.ws {
+			if !w.busy && w.cold {
+				dst = w
+				break
+			}
+		}
+		if src == nil || src.cold || dst == nil {
+			s.mu.Unlock()
+			return n, nil
+		}
+		src.busy, dst.busy = true, true
+		s.mu.Unlock()
+
+		err := s.replaceDir(dst.path, src.path)
+		s.mu.Lock()
+		if err == nil {
+			dst.head, dst.cold = src.head, false
+		}
+		s.mu.Unlock()
+		s.release(src)
+		s.release(dst)
+		if err != nil {
+			return n, err
+		}
+	}
+}
+
+// replaceDir swaps dst for a copy of src. The copy is made in the node's tmp
+// dir first, so a failed copy leaves dst as it was.
+func (s *Server) replaceDir(dst, src string) error {
+	tmp, err := os.MkdirTemp(filepath.Join(s.Root, "tmp"), "reseed-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	fresh, old := filepath.Join(tmp, "new"), filepath.Join(tmp, "old")
+	if err := cloneDir(src, fresh); err != nil {
+		return err
+	}
+	if err := os.Rename(dst, old); err != nil {
+		return err
+	}
+	if err := os.Rename(fresh, dst); err != nil {
+		os.Rename(old, dst)
+		return err
+	}
+	return nil
+}
+
+func cloneDir(src, dst string) error {
+	if out, err := exec.Command("cp", "-a", "--reflink=auto", src, dst).CombinedOutput(); err != nil {
+		return fmt.Errorf("clone workspace: %v: %s", err, out)
+	}
+	return nil
+}
+
+// bestIdle returns the idle workspace with the highest score, the most
+// recently used among equals. Callers hold s.mu.
+func bestIdle(rp *repo, score func(*workspace) int) *workspace {
+	var best *workspace
+	for _, w := range rp.ws {
+		if w.busy {
+			continue
+		}
+		if best == nil || score(w) > score(best) || score(w) == score(best) && w.lastUsed.After(best.lastUsed) {
+			best = w
+		}
+	}
+	return best
+}
+
+func warmth(w *workspace) int {
+	if w.cold {
+		return 0
+	}
+	return 1
 }
 
 func (s *Server) release(ws *workspace) {
